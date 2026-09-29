@@ -15,30 +15,57 @@ export type PlayerSource = { url: string; mode: 'direct' | 'hls' | 'dash'; conte
 
 export default function Player({ source }: { source: PlayerSource }) {
   if (source.live) {
-    return <LiveVideoPlayer><LiveVideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} live /><RemoteControls /></LiveVideoSkin></LiveVideoPlayer>;
+    return <LiveVideoPlayer><LiveVideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} live /><RemoteControls source={source} /></LiveVideoSkin></LiveVideoPlayer>;
   }
-  if (source.audio) return <AudioPlayer><AudioSkin><Audio src={source.url} autoPlay preload="auto" /><RemoteControls /></AudioSkin></AudioPlayer>;
-  return <VideoPlayer><VideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} /><PlaybackProgress source={source} /><RemoteControls /></VideoSkin>{source.roomId && <WatchalongSync roomId={source.roomId} />}</VideoPlayer>;
+  if (source.audio) return <AudioPlayer><AudioSkin><Audio src={source.url} autoPlay preload="auto" /><RemoteControls source={source} /></AudioSkin></AudioPlayer>;
+  return <VideoPlayer><VideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} /><PlaybackProgress source={source} /><RemoteControls source={source} /></VideoSkin>{source.roomId && <WatchalongSync roomId={source.roomId} />}</VideoPlayer>;
 }
 
-function RemoteControls() {
+function RemoteControls({ source }: { source: PlayerSource }) {
   const store = usePlayer();
   const container = useContainer();
   useEffect(() => {
-    if (!container || document.documentElement.dataset.tvNavigation !== 'true') return;
+    if (!container) return;
     const element = container;
     element.setAttribute('data-tv-player', '');
     // Locks keep the packaged controls reachable by a remote even when no pointer moves.
-    const release = typeof store.requestControlsLock === 'function' ? store.requestControlsLock() : undefined;
+    const release = document.documentElement.dataset.tvNavigation === 'true' && typeof store.requestControlsLock === 'function' ? store.requestControlsLock() : undefined;
     const command = (event: Event) => {
       if (!store.target || store.destroyed) return;
-      const key = (event as CustomEvent<string>).detail;
+      const remote = (event as CustomEvent<{ key?: string; action?: string; repeat?: boolean }>).detail;
+      if (remote?.action !== 'down' || remote.repeat) return;
+      const key = remote.key;
       if (key === 'MediaPause' || key === 'MediaPlayPause' && !store.state.paused) store.pause();
       else if (key === 'MediaPlay' || key === 'MediaPlayPause') void store.play().catch(() => {});
+      else if (key === 'MediaRecord') {
+        const player = store as typeof store & { toggleFullscreen?: () => Promise<void> };
+        if (typeof player.toggleFullscreen === 'function') void player.toggleFullscreen().catch(() => {});
+      }
+      else if (key === 'MediaRewind') void store.seek(Math.max(0, Number(store.state.currentTime) - 10)).catch(() => {});
+      else if (key === 'MediaFastForward') {
+        const duration = Number(store.state.duration) || Infinity;
+        void store.seek(Math.min(duration, Number(store.state.currentTime) + 10)).catch(() => {});
+      } else if (key === 'CaptionToggle') {
+        const tracks = ((store.state as any).textTrackList || []).filter((track: any) => ['captions', 'subtitles'].includes(String(track.kind).toLowerCase()));
+        if (!tracks.length) return;
+        const english = tracks.find((track: any) => /^en(?:[-_]|$)/i.test(String(track.language || '')) || /english/i.test(String(track.label || '')));
+        const selected = english || tracks[0];
+        const showing = tracks.some((track: any) => track.id === selected.id && track.mode === 'showing');
+        if (typeof (store as any).selectSubtitlesTrack === 'function') (store as any).selectSubtitlesTrack(showing ? 'off' : selected.id);
+      }
     };
-    element.addEventListener('tv-media-key', command);
-    return () => { release?.(); element.removeAttribute('data-tv-player'); element.removeEventListener('tv-media-key', command); };
-  }, [container, store]);
+    window.addEventListener('tv-remote-key', command);
+    const fullscreenKey = (event: KeyboardEvent) => {
+      if (source.audio || document.documentElement.dataset.tvNavigation !== 'true' ||
+          !['f', 'F', 'MediaRecord'].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey ||
+          (event.target instanceof HTMLElement && event.target.matches('input,textarea,[contenteditable="true"]'))) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.repeat || !store.target || store.destroyed) return;
+      void store.toggleFullscreen().catch(error => console.warn('TV fullscreen request failed', error));
+    };
+    window.addEventListener('keydown', fullscreenKey, true);
+    return () => { release?.(); element.removeAttribute('data-tv-player'); window.removeEventListener('tv-remote-key', command); window.removeEventListener('keydown', fullscreenKey, true); };
+  }, [container, source.live, store]);
   return null;
 }
 

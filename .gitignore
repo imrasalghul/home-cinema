@@ -6,3 +6,10 @@ dist/
 !.env.example
 *.log
 .DS_Store
+apps/androidtv/.gradle/
+apps/androidtv/local.properties
+apps/androidtv/**/build/
+*.apk
+*.jks
+*.keystore
+apps/androidtv/key.properties

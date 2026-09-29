@@ -4,3 +4,9 @@ dist
 !.env.example
 .git
 *.log
+apps/androidtv/.gradle
+apps/androidtv/**/build
+apps/androidtv/local.properties
+*.apk
+*.jks
+*.keystore

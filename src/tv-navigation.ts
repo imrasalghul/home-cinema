@@ -45,9 +45,27 @@ function visible(element: HTMLElement): boolean {
   return true;
 }
 function candidates(root: ParentNode): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(targets)).filter(element => visible(element) &&
+  const found = new Set<HTMLElement>(Array.from(root.querySelectorAll<HTMLElement>(targets)));
+  // Video.js 10 renders packaged controls inside shadow DOM. Walk open roots so
+  // TV remotes can focus and activate fullscreen, captions, seek, and play.
+  const scan = (node: ParentNode) => {
+    for (const element of Array.from(node.querySelectorAll<HTMLElement>('*'))) {
+      if (element.shadowRoot) {
+        for (const nested of Array.from(element.shadowRoot.querySelectorAll<HTMLElement>(targets))) found.add(nested);
+        scan(element.shadowRoot);
+      }
+    }
+  };
+  scan(root);
+  return Array.from(found).filter(element => visible(element) &&
     (element.tabIndex >= 0 || element.matches('[role="menuitem"],[role="menuitemradio"],[role="radio"]')) &&
     !element.matches('[role="region"][tabindex]'));
+}
+
+function deepActiveElement(): HTMLElement | null {
+  let active = document.activeElement as HTMLElement | null;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement as HTMLElement;
+  return active;
 }
 
 export function installTvNavigation() {
@@ -60,6 +78,11 @@ export function installTvNavigation() {
   if ((option || preference) === '0' || !((option || preference) === '1' || isTvBrowser(navigator.userAgent))) return () => {};
   const html = document.documentElement;
   html.dataset.tvNavigation = 'true';
+  // Inject the TV sizing fix from the versioned application bundle. This avoids
+  // stale WebView/edge caches of the shared stylesheet and leaves desktop/mobile alone.
+  const tvPlayerStyle = document.createElement('style');
+  tvPlayerStyle.textContent = '.youtube-watch-main > .vjs-skin { width: 100% !important; max-width: none; margin-inline: 0; }';
+  document.head.append(tvPlayerStyle);
   let previousScope: ParentNode = document;
   const restore = new Map<ParentNode, HTMLElement>();
   let lastFocus: HTMLElement | null = null;
@@ -70,7 +93,7 @@ export function installTvNavigation() {
     const dialogs = Array.from(root.querySelectorAll<HTMLElement>('[aria-modal="true"],[data-tv-scope]')).filter(visible);
     return dialogs.at(-1) || root;
   };
-  const focus = (element?: HTMLElement) => {
+    const focus = (element?: HTMLElement) => {
     if (!element) return;
     element.focus({ preventScroll: true });
     element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
@@ -79,7 +102,7 @@ export function installTvNavigation() {
   const repairFocus = () => {
     frame = 0;
     const root = scope();
-    const active = document.activeElement as HTMLElement | null;
+    const active = deepActiveElement();
     if (root !== previousScope) {
       if (root !== document && !restore.has(root) && lastFocus && !(root as Element).contains(lastFocus)) restore.set(root, lastFocus);
       const closing = previousScope !== document && (!(previousScope as Element).isConnected || !visible(previousScope as HTMLElement));
@@ -92,17 +115,18 @@ export function installTvNavigation() {
   };
   const schedule = () => { if (!frame) frame = requestAnimationFrame(repairFocus); };
   const remember = (event: FocusEvent) => {
-    if (!(event.target instanceof HTMLElement)) return;
+    const target = event.composedPath().find(item => item instanceof HTMLElement) as HTMLElement | undefined;
+    if (!target) return;
     const root = scope();
     // React autofocus can run before the mutation observer sees a new dialog.
     if (root !== previousScope && root !== document && !restore.has(root) && lastFocus && !(root as Element).contains(lastFocus)) restore.set(root, lastFocus);
-    lastFocus = event.target;
+    lastFocus = target;
   };
   const consume = (event: KeyboardEvent) => { event.preventDefault(); event.stopImmediatePropagation(); };
   const onKey = (event: KeyboardEvent) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
     const key = remoteKey(event.key, event.keyCode);
-    const active = document.activeElement as HTMLElement | null;
+    const active = deepActiveElement();
     const root = scope();
     if (key === 'Escape') {
       // Let the player's menus dismiss themselves before closing their containing dialog.
@@ -170,6 +194,7 @@ export function installTvNavigation() {
   schedule();
   return () => {
     delete html.dataset.tvNavigation;
+    tvPlayerStyle.remove();
     cancelAnimationFrame(frame); observer.disconnect();
     window.clearInterval(gamepadTimer);
     document.removeEventListener('keydown', onKey, true);

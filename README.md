@@ -119,6 +119,10 @@ If a TV browser is not recognized, open the app with `?tv=1` (for example, `/mov
 
 On the login page, choose **Sign in with phone**, scan the QR code, and approve the Plex sign-in on your phone. Keep the TV page open; it signs in automatically after approval. **Continue with Plex** remains available for signing in directly in the browser.
 
+## Android TV app
+
+The native Android TV app opens a Home Cinema server in Android System WebView. Android 10 (API 29) or newer is required. See [available apps](apps/README.md) and the [Android TV build and setup guide](apps/androidtv/README.md) for details.
+
 ## Build from source
 
 To build the image locally instead of pulling it from GHCR, run `docker compose up -d --build home-cinema`.

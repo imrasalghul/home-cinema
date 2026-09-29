@@ -45,7 +45,7 @@ type YouTubeVideo = YouTubeResult & { description: string; streamUrl: string; co
 type CreatorSubscription = { id: string; name: string };
 type SavedYouTubeVideo = YouTubeResult;
 type ProfileData = { subscriptions: CreatorSubscription[]; watchlist: SavedYouTubeVideo[]; watchedVideoIds: string[]; mediaProgress: Record<string, { seconds: number; duration: number; updatedAt: number }> };
-type Playback = PlayerSource & { title: string; audio?: boolean; musicTrackId?: string };
+type Playback = PlayerSource & { title: string; audio?: boolean; musicTrackId?: string; channelUuid?: string };
 type AppTab = 'movies' | 'tv' | 'live' | 'youtube' | 'music';
 type DirectYouTubeRoute = { kind: 'video'; id: string } | { kind: 'handle'; handle: string } | { kind: 'channel'; id: string };
 
@@ -242,6 +242,7 @@ function App() {
   const [season, setSeason] = useState<Item | null>(null);
   const [episodes, setEpisodes] = useState<Item[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const channelSwitchBusy = useRef(false);
   const [channelTotal, setChannelTotal] = useState(0);
   const [channelStart, setChannelStart] = useState(0);
   const [channelLoadingMore, setChannelLoadingMore] = useState(false);
@@ -447,6 +448,38 @@ function App() {
     const timer = window.setInterval(() => setEpgNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, [tab]);
+
+  useEffect(() => {
+    const onRemoteKey = async (event: Event) => {
+      const remote = (event as CustomEvent<{ key?: string; action?: string }>).detail;
+      if (remote?.action !== 'down' || !['ChannelUp', 'ChannelDown'].includes(remote.key || '') || tab !== 'live' || !playback?.live || !playback.channelUuid || channelSwitchBusy.current) return;
+      channelSwitchBusy.current = true;
+      try {
+        let allChannels = channels;
+        if (allChannels.length < channelTotal) {
+          const loaded: Channel[] = [];
+          for (let offset = 0; offset < channelTotal; offset += 250) {
+            const page = await request<{ items: Channel[]; total: number }>(`/api/tv/channels?start=${offset}&size=250`);
+            loaded.push(...page.items);
+            if (!page.items.length || loaded.length >= page.total) break;
+          }
+          if (loaded.length) allChannels = loaded;
+        }
+        const ordered = [...allChannels].sort((a, b) => (a.number ?? Number.MAX_SAFE_INTEGER) - (b.number ?? Number.MAX_SAFE_INTEGER) || a.name.localeCompare(b.name));
+        const current = ordered.findIndex(channel => channel.uuid === playback.channelUuid);
+        if (ordered.length && current >= 0) {
+          const step = remote.key === 'ChannelUp' ? 1 : -1;
+          void startLive(ordered[(current + step + ordered.length) % ordered.length]);
+        }
+      } catch (error) {
+        setPageError(error instanceof Error ? error.message : 'Could not change channel.');
+      } finally {
+        channelSwitchBusy.current = false;
+      }
+    };
+    window.addEventListener('tv-remote-key', onRemoteKey);
+    return () => window.removeEventListener('tv-remote-key', onRemoteKey);
+  }, [tab, playback, channels, channelTotal]);
 
   useEffect(() => {
     if (!status?.authenticated || tab !== 'live') return;
@@ -676,7 +709,7 @@ function App() {
       const result = await request<{ mode: 'hls'; url: string; streamId: string; live: boolean; title: string }>(`/api/tv/play/${encodeURIComponent(channel.uuid)}`, { method: 'POST' });
       if (generation !== playbackRequest.current) { void fetch(`/api/streams/${result.streamId}`, { method: 'DELETE' }).catch(() => {}); return; }
       setYoutubeVideo(null);
-      setPlayback({ ...result, title: channel.name });
+      setPlayback({ ...result, title: channel.name, channelUuid: channel.uuid });
     } catch (error) { if (generation !== playbackRequest.current) return; setPageError(error instanceof Error ? error.message : 'Could not start this channel.'); }
     finally { if (generation === playbackRequest.current) setLoading(false); }
   }
