@@ -19,6 +19,7 @@ COPY src/watchalong.ts ./src/watchalong.ts
 COPY src/casting.ts ./src/casting.ts
 COPY src/session-store.ts ./src/session-store.ts
 COPY src/media-rules.ts ./src/media-rules.ts
+COPY src/security.ts ./src/security.ts
 COPY --from=build /app/dist/public ./dist/public
 ENV NODE_ENV=production PORT=3000 SESSION_DATA_ROOT=/data/sessions
 EXPOSE 3000

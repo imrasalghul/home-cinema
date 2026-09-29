@@ -111,6 +111,14 @@ Cloudflare Tunnel can publish Home Cinema on a hostname you control without open
 
 No inbound port forwarding is needed; `cloudflared` creates outbound connections to Cloudflare. Leave Cloudflare caching at its defaults and do not add a **Cache Everything** rule for the app, since authenticated media and API routes are private. See Cloudflare's [published application routing guide](https://developers.cloudflare.com/tunnel/concepts/routing/) and [Tunnel overview](https://developers.cloudflare.com/tunnel/) for more information.
 
+## TV remote navigation and phone sign-in
+
+TV browsers enable remote navigation automatically when recognized. Use the D-pad to move between controls, OK/Select to activate them, and Back to close a menu or dialog or return to the previous view. Playback controls stay visible in TV mode. Standard gamepad D-pad and A/B buttons also work where the browser exposes them.
+
+If a TV browser is not recognized, open the app with `?tv=1` (for example, `/movies?tv=1`). The choice is saved on that device. Use `?tv=0` to disable it. Desktop and mobile browsing keep their existing behavior unless TV mode is explicitly enabled. Compatibility depends on the TV browser and its media support; this is a web application, not a native TV app.
+
+On the login page, choose **Sign in with phone**, scan the QR code, and approve the Plex sign-in on your phone. Keep the TV page open; it signs in automatically after approval. **Continue with Plex** remains available for signing in directly in the browser.
+
 ## Build from source
 
 To build the image locally instead of pulling it from GHCR, run `docker compose up -d --build home-cinema`.
@@ -134,7 +142,7 @@ All configuration is read by the server from `.env` or the process environment. 
 | Variable | Purpose |
 | --- | --- |
 | `SITE_NAME` | Display name in the page title, header, Plex client identity, and Navidrome client field. |
-| `SESSION_SECRET` | Secret used to sign session cookies and media URLs. Use a long random value. |
+| `SESSION_SECRET` | Secret used to sign session cookies and media URLs. Use a unique random value of at least 32 characters. |
 | `PLEX_SERVER_URL` | Base URL of the Plex Media Server. |
 | `PLEX_MACHINE_ID` | Plex server machine identifier used to verify the configured server. |
 | `PLEX_CLIENT_IDENTIFIER` | Optional stable identifier for this app in Plex. |
@@ -162,7 +170,7 @@ PLEX_PATH_MAPPINGS={"/mnt/media/movies":"/media/library/movies","/mnt/media/tv":
 - Keep `.env`, Plex tokens, service passwords, API keys, session data, and user profiles private. Do not put credentials in frontend code, issue reports, screenshots, or committed files.
 - Use a unique `SESSION_SECRET`; changing it signs out existing sessions and invalidates signed Plex media URLs.
 - The app requires a Plex session for its normal media routes and sends media responses as `private, no-store`. Live TV is not edge-cached.
-- Casting uses short-lived bearer URLs so a receiver can access a stream without the browser's Plex cookie. Anyone who obtains an active cast URL can use it until the grant expires; do not share those URLs.
+- Casting uses short-lived bearer URLs so a receiver can access a stream without the browser's Plex cookie. Anyone who obtains an active cast URL can use it until the grant expires or the owner signs out; do not share those URLs.
 - Mount media read-only and restrict network access to the app and upstream services.
 
 ## Contributing

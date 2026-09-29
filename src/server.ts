@@ -15,6 +15,7 @@ import { PersistentSessionStore } from './session-store';
 import { byteRange, requestedSeasons, changeSubscription } from './media-rules';
 import { registerWatchalong } from './watchalong';
 import { registerCasting, castState, mediaOwner } from './casting';
+import { protectWrites, requireSessionSecret, rateLimit, fetchValidated, WorkPool } from './security';
 
 const execFile = promisify(execFileCb);
 const app = express();
@@ -27,7 +28,8 @@ const PLEX_URL = (process.env.PLEX_SERVER_URL || '').replace(/\/$/, '');
 const PLEX_MACHINE_ID = process.env.PLEX_MACHINE_ID || '';
 const SEERR_URL = (process.env.SEERR_URL || '').replace(/\/$/, '');
 const SEERR_API_KEY = process.env.SEERR_API_KEY || '';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'development-only-change-me';
+requireSessionSecret(process.env.SESSION_SECRET, process.env.NODE_ENV === 'production');
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const INVIDIOUS_URL = (process.env.INVIDIOUS_URL || '').replace(/\/$/, '');
 const NAVIDROME_URL = (process.env.NAVIDROME_URL || '').replace(/\/$/, '');
 const NAVIDROME_USERNAME = process.env.NAVIDROME_USERNAME || '';
@@ -51,8 +53,10 @@ type StreamSession = {
   lastAccess: number;
   segmentJobs: Map<number, Promise<void>>;
   closed?: boolean;
+  input?: Readable;
 };
 const streamSessions = new Map<string, StreamSession>();
+const transcodes = new WorkPool(4, 24);
 const youtubeMediaUrls = new Map<string, { owner: string; url: string; expiresAt: number }>();
 const tvhIconPaths = new Map<string, string>();
 let tvhGuideCache: { key: number; expiresAt: number; start: number; end: number; events: MediaItem[] } | null = null;
@@ -75,6 +79,15 @@ const emptyUserProfile = (): UserProfile => ({ subscriptions: [], watchlist: [],
 type MediaItem = Record<string, any>;
 
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  next();
+});
+app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); next(); });
+app.use('/api', protectWrites(process.env.APP_PUBLIC_URL));
 app.use(express.json({ limit: '1mb' }));
 app.use(session({
   name: 'home-cinema.sid',
@@ -441,6 +454,10 @@ async function inspectMedia(filePath: string) {
 }
 
 function startHls(owner: string, input: { filePath?: string; liveResponse?: globalThis.Response; durationSeconds?: number }) {
+  if (streamSessions.size >= 32 || [...streamSessions.values()].filter(stream => stream.owner === owner).length >= 8) {
+    void input.liveResponse?.body?.cancel().catch(() => {});
+    throw Object.assign(new Error('Too many active playback sessions. Close another player and try again.'), { status: 429 });
+  }
   const id = crypto.randomUUID();
   const directory = path.join(HLS_ROOT, id);
   fs.mkdirSync(directory, { recursive: true });
@@ -470,12 +487,15 @@ function startHls(owner: string, input: { filePath?: string; liveResponse?: glob
   const child = spawn('ffmpeg', args, { stdio: ['pipe', 'ignore', 'pipe'] });
   child.stderr?.on('data', () => undefined);
   child.on('error', () => undefined);
+  let sourceStream: Readable | undefined;
   if (input.liveResponse?.body) {
-    const stream = Readable.fromWeb(input.liveResponse.body as import('node:stream/web').ReadableStream);
-    stream.on('error', () => child.kill('SIGTERM'));
-    stream.pipe(child.stdin!);
+    sourceStream = Readable.fromWeb(input.liveResponse.body as import('node:stream/web').ReadableStream);
+    sourceStream.on('error', () => child.kill('SIGTERM'));
+    child.stdin!.on('error', () => sourceStream?.destroy());
+    child.once('close', () => sourceStream?.destroy());
+    sourceStream.pipe(child.stdin!);
   }
-  streamSessions.set(id, { directory, owner, process: child, live, durationSeconds: input.durationSeconds, createdAt: Date.now(), lastAccess: Date.now(), segmentJobs: new Map() });
+  streamSessions.set(id, { directory, owner, process: child, input: sourceStream, live, durationSeconds: input.durationSeconds, createdAt: Date.now(), lastAccess: Date.now(), segmentJobs: new Map() });
   return id;
 }
 
@@ -526,6 +546,7 @@ function closeStream(id: string) {
   if (!stream) return;
   stream.closed = true;
   streamSessions.delete(id);
+  stream.input?.destroy();
   stream.process?.kill('SIGTERM');
   setTimeout(() => {
     stream.process?.kill('SIGKILL');
@@ -566,7 +587,7 @@ app.get('/api/status', asyncRoute(async (_req, res) => {
   });
 }));
 
-registerCasting(app, { auth: requirePlex, wrap: asyncRoute, state: plexState, validYoutubeMedia: (owner, url) => {
+const casting = registerCasting(app, { auth: requirePlex, wrap: asyncRoute, state: plexState, validYoutubeMedia: (owner, url) => {
   const token = url.match(/^\/api\/youtube\/media\/([A-Za-z0-9_-]+)$/)?.[1];
   return Boolean(token && youtubeMediaUrls.get(token)?.owner === owner);
 }, validate: async (req, url) => {
@@ -880,7 +901,7 @@ app.get('/api/youtube/manifest/:videoId', requirePlex, asyncRoute(async (req, re
   const video = await invidiousJson(`videos/${encodeURIComponent(videoId)}?local=true&hl=en-US`);
   const manifestUrl = invidiousDashUrl(video, videoId);
   if (!manifestUrl) throw Object.assign(new Error('Invidious no longer has a DASH manifest for this video.'), { status: 404 });
-  const upstream = await fetch(manifestUrl, { signal: AbortSignal.timeout(30_000) });
+  const upstream = await fetchValidated(manifestUrl, { signal: AbortSignal.timeout(30_000) }, url => url.protocol === 'https:' && url.origin === new URL(INVIDIOUS_URL).origin);
   if (!upstream.ok) throw Object.assign(new Error(`Invidious returned HTTP ${upstream.status} for the DASH manifest.`), { status: 502 });
   const instance = new URL(INVIDIOUS_URL);
   if (new URL(upstream.url).host !== instance.host) throw Object.assign(new Error('Invidious redirected the DASH manifest to an untrusted host.'), { status: 502 });
@@ -910,7 +931,7 @@ app.get('/api/youtube/media/:mediaToken', requirePlex, asyncRoute(async (req, re
     const value = req.get(header);
     if (value) headers.set(header, value);
   }
-  const upstream = await fetch(url, { headers, signal: AbortSignal.timeout(120_000) });
+  const upstream = await fetchValidated(url, { headers, signal: AbortSignal.timeout(120_000) }, target => target.protocol === 'https:' && (target.hostname.endsWith('.googlevideo.com') || target.origin === new URL(INVIDIOUS_URL).origin && target.pathname.includes('videoplayback')));
   if (!upstream.ok && upstream.status !== 206) throw Object.assign(new Error(`The YouTube media source returned HTTP ${upstream.status}.`), { status: 502 });
   for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
     const value = upstream.headers.get(header);
@@ -933,7 +954,7 @@ app.get('/api/youtube/captions/:videoId/:captionIndex', requirePlex, asyncRoute(
   const instance = new URL(INVIDIOUS_URL);
   const captionUrl = new URL(String(caption.url), `${instance}/`);
   if (captionUrl.protocol !== 'https:' || captionUrl.host !== instance.host || !captionUrl.pathname.startsWith('/api/v1/captions/')) throw Object.assign(new Error('Invalid Invidious caption URL.'), { status: 502 });
-  const response = await fetch(captionUrl, { signal: AbortSignal.timeout(30_000) });
+  const response = await fetchValidated(captionUrl, { signal: AbortSignal.timeout(30_000) }, url => url.protocol === 'https:' && url.origin === instance.origin);
   if (!response.ok) throw Object.assign(new Error(`Invidious captions returned HTTP ${response.status}.`), { status: 502 });
   res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
   res.setHeader('Cache-Control', 'private, max-age=86400');
@@ -965,7 +986,7 @@ app.get('/api/youtube/comments/:videoId', requirePlex, asyncRoute(async (req, re
   })) });
 }));
 
-app.post('/api/auth/plex/pin', asyncRoute(async (req, res) => {
+app.post('/api/auth/plex/pin', rateLimit(20, 10 * 60_000), asyncRoute(async (req, res) => {
   const pinUrl = new URL('https://plex.tv/api/v2/pins');
   pinUrl.searchParams.set('strong', 'true');
   const response = await fetch(pinUrl, {
@@ -993,7 +1014,7 @@ app.post('/api/auth/plex/pin', asyncRoute(async (req, res) => {
   res.json({ code: pin.code, authUrl: `${authUrl.toString()}#?${hash.toString()}`, expiresIn: pin.expiresIn || 600 });
 }));
 
-app.get('/api/auth/plex/poll', asyncRoute(async (req, res) => {
+app.get('/api/auth/plex/poll', rateLimit(300, 60_000), asyncRoute(async (req, res) => {
   const state = plexState(req);
   const pinState = state.plexPin;
   if (!pinState || Date.now() > pinState.expiresAt) {
@@ -1036,9 +1057,11 @@ app.get('/api/auth/plex/poll', asyncRoute(async (req, res) => {
     res.status(403).json({ error: 'Plex server identity did not match the configured server.' });
     return;
   }
-  state.plexToken = serverToken;
-  state.plexUser = { id: account.id, username: account.username, title: account.title, email: account.email };
-  state.plexPin = undefined;
+  casting.revokeOwner(req.sessionID);
+  await new Promise<void>((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
+  const signedIn = plexState(req);
+  signedIn.plexToken = serverToken;
+  signedIn.plexUser = { id: account.id, username: account.username, title: account.title, email: account.email };
   res.json({ authenticated: true, user: account.username || account.title || 'Plex user' });
 }));
 
@@ -1120,6 +1143,9 @@ app.put('/api/profile/watched/:videoId', requirePlex, asyncRoute(async (req, res
 }));
 
 app.post('/api/auth/logout', (req, res) => {
+  casting.revokeOwner(req.sessionID);
+  for (const [id, stream] of streamSessions) if (stream.owner === req.sessionID) closeStream(id);
+  for (const [id, entry] of youtubeMediaUrls) if (entry.owner === req.sessionID) youtubeMediaUrls.delete(id);
   req.session.destroy(() => {
     res.clearCookie('home-cinema.sid', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
     res.status(204).end();
@@ -1349,7 +1375,8 @@ app.get('/api/streams/:streamId/:filename', requirePlex, asyncRoute(async (req, 
     if (!Number.isSafeInteger(segmentIndex)) { res.status(404).end(); return; }
     let job = stream.segmentJobs.get(segmentIndex);
     if (!job) {
-      job = generateVodSegment(stream, segmentIndex).finally(() => stream.segmentJobs.delete(segmentIndex));
+      if (stream.segmentJobs.size >= 8) throw Object.assign(new Error('Too many simultaneous segment requests.'), { status: 429 });
+      job = transcodes.run(() => generateVodSegment(stream, segmentIndex)).finally(() => stream.segmentJobs.delete(segmentIndex));
       stream.segmentJobs.set(segmentIndex, job);
     }
     try { await job; }
@@ -1368,7 +1395,8 @@ app.get('/api/streams/:streamId/:filename', requirePlex, asyncRoute(async (req, 
   }
   res.setHeader('Content-Type', req.params.filename.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t');
   res.setHeader('Cache-Control', 'private, no-store');
-  fs.createReadStream(fullPath).pipe(res);
+  try { await pipeline(fs.createReadStream(fullPath), res); }
+  catch (error) { if (!res.destroyed) res.destroy(error as Error); }
 }));
 
 app.delete('/api/streams/:streamId', requirePlex, (req, res) => {
@@ -1378,6 +1406,7 @@ app.delete('/api/streams/:streamId', requirePlex, (req, res) => {
 });
 
 const publicDir = path.resolve('dist/public');
+app.use('/api', (_req, res) => res.status(404).json({ error: 'API endpoint not found.' }));
 if (process.env.NODE_ENV === 'production' && fs.existsSync(publicDir)) {
   app.use(express.static(publicDir, { index: false, maxAge: '1h' }));
   app.get('*', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));

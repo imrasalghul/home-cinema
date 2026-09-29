@@ -26,8 +26,8 @@ export default function LyricsPanel({ trackId, onClose }: { trackId: string; onC
   const song = songs[selected];
   // Keep the third-party script isolated from the app, its cookies and player.
   const embedDocument = song ? `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:12px;font:16px system-ui;background:#fff;color:#111}a{color:#333}</style></head><body><div id="rg_embed_link_${song.id}" class="rg_embed_link" data-song-id="${song.id}">Read <a target="_blank" rel="noopener noreferrer" href="${escapeHtml(song.url)}">${escapeHtml(song.title)} by ${escapeHtml(song.artist)}</a> on Genius</div><script crossorigin src="https://genius.com/songs/${song.id}/embed.js"></script></body></html>` : '';
-  return <aside className="lyrics-panel" id="music-lyrics" aria-label="Genius lyrics">
-    <header><div><strong>Lyrics</strong><small>Genius</small></div><button className="icon-button" onClick={onClose} aria-label="Close lyrics">×</button></header>
+  return <aside data-tv-scope className="lyrics-panel" id="music-lyrics" aria-label="Genius lyrics">
+    <header><div><strong>Lyrics</strong><small>Genius</small></div><button className="icon-button" onClick={onClose} data-tv-close aria-label="Close lyrics">×</button></header>
     {loading ? <p role="status">Finding lyrics…</p> : error ? <p role="alert">{error}</p> : !song ? <p>No matching lyrics found on Genius.</p> : <>
       {songs.length > 1 && <label className="lyrics-match">Song match<select value={selected} onChange={event => setSelected(Number(event.target.value))}>{songs.map((entry, index) => <option value={index} key={entry.id}>{entry.title} — {entry.artist}</option>)}</select></label>}
       <iframe key={song.id} title={`${song.title} lyrics from Genius`} srcDoc={embedDocument} sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" />

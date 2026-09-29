@@ -6,6 +6,7 @@ import YouTubeCommentThread, { type YouTubeComment } from './YouTubeCommentThrea
 import LyricsPanel from './LyricsPanel';
 import MovieDetails, { RottenTomatoes } from './MovieDetails';
 import { NotificationBell, WatchalongInvite, type WatchRoom } from './WatchalongUI';
+import { useTvNavigation } from './tv-navigation';
 
 const Player = lazy(() => import('./Player'));
 
@@ -90,20 +91,27 @@ function PlexGate({ onSignedIn, siteName }: { onSignedIn: (user: string) => void
   const [authUrl, setAuthUrl] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const [phoneSignIn, setPhoneSignIn] = useState(false);
+  const [qrCode, setQrCode] = useState('');
 
-  async function signIn() {
+  async function signIn(phone = false) {
     setError('');
     setPending(true);
+    setPhoneSignIn(phone); setQrCode('');
     // Open synchronously from the click gesture so browser popup protection does not block Plex.
-    const authWindow = window.open('about:blank', '_blank');
+    const authWindow = phone ? null : window.open('about:blank', '_blank');
     try {
       const pin = await request<{ code: string; authUrl: string }>('/api/auth/plex/pin', { method: 'POST' });
       setCode(pin.code);
       setAuthUrl(pin.authUrl);
-      if (authWindow) authWindow.location.replace(pin.authUrl);
+      if (phone) {
+        const { toDataURL } = await import('qrcode');
+        setQrCode(await toDataURL(pin.authUrl, { width: 320, margin: 4, errorCorrectionLevel: 'M' }));
+      } else if (authWindow) authWindow.location.replace(pin.authUrl);
       else setError('Your browser blocked the Plex sign-in tab. Use “Open Plex sign-in” below, or allow pop-ups for this site.');
     } catch (reason) {
       authWindow?.close();
+      setCode('');
       setError(reason instanceof Error ? reason.message : 'Could not start Plex sign-in.');
       setPending(false);
     }
@@ -111,21 +119,27 @@ function PlexGate({ onSignedIn, siteName }: { onSignedIn: (user: string) => void
 
   useEffect(() => {
     if (!code) return;
+    let busy = false;
+    let stopped = false;
     const poll = window.setInterval(async () => {
+      if (busy) return;
+      busy = true;
       try {
         const result = await request<{ authenticated: boolean; user?: string }>('/api/auth/plex/poll');
+        if (stopped) return;
         if (result.authenticated) {
           window.clearInterval(poll);
           onSignedIn(result.user || 'Plex user');
         }
       } catch (reason) {
+        if (stopped) return;
         window.clearInterval(poll);
         setError(reason instanceof Error ? reason.message : 'Plex sign-in failed.');
         setCode('');
         setPending(false);
-      }
+      } finally { busy = false; }
     }, 1800);
-    return () => window.clearInterval(poll);
+    return () => { stopped = true; window.clearInterval(poll); };
   }, [code, onSignedIn]);
 
   return (
@@ -141,13 +155,15 @@ function PlexGate({ onSignedIn, siteName }: { onSignedIn: (user: string) => void
           {code ? (
             <div className="pin-box">
               <span className="eyebrow">PLEX SIGN-IN</span>
-              <span className="waiting"><i /> Approve the request in the Plex tab. This page will sign in automatically.</span>
+              {phoneSignIn && (qrCode ? <img className="plex-qr" src={qrCode} alt="Scan with your phone to approve Plex sign-in on this screen" width="320" height="320" /> : <span role="status">Preparing QR code…</span>)}
+              <span className="waiting"><i /> {phoneSignIn ? 'Scan with your phone’s camera and approve sign-in with Plex. This screen will sign in automatically.' : 'Approve the request in the Plex tab. This page will sign in automatically.'}</span>
               <a href={authUrl} target="_blank" rel="noreferrer">Open Plex sign-in ↗</a>
+              <button className="text-button" onClick={() => { setCode(''); setPending(false); setQrCode(''); }}>Start again</button>
             </div>
           ) : (
-            <button className="plex-login" onClick={signIn} disabled={pending}>
+            <><button className="plex-login" onClick={() => void signIn()} disabled={pending}>
               <span className="plex-logo">▰</span>{pending ? 'Connecting to Plex…' : 'Continue with Plex'}
-            </button>
+            </button><button className="plex-phone-login" onClick={() => void signIn(true)} disabled={pending}>Sign in with phone <span aria-hidden="true">▦</span></button></>
           )}
           {error && <div className="error-banner">{error}</div>}
           <div className="privacy-note"><span>▣</span> Sign in only connects to your configured Plex server.</div>
@@ -191,7 +207,7 @@ function VideoOverlay({ playback, onClose, onWatchalong }: { playback: Playback;
   return (
     <div className={playback.audio ? "music-dock" : "player-backdrop"} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
       <section className="player-dialog" role={playback.audio ? "region" : "dialog"} aria-modal={playback.audio ? undefined : true} aria-label={playback.title}>
-        {playback.audio && playback.musicTrackId && lyricsOpen && <LyricsPanel trackId={playback.musicTrackId} onClose={() => setLyricsOpen(false)} />}<header className="player-head"><div><span className="live-dot" /> NOW PLAYING <strong>{playback.title}</strong></div>{playback.audio && playback.musicTrackId && <button className="lyrics-toggle" aria-expanded={lyricsOpen} aria-controls="music-lyrics" onClick={() => setLyricsOpen(open => !open)}>Lyrics</button>}{playback.itemKey && !playback.roomId && <button className="watchalong-button" onClick={onWatchalong}>Watchalong</button>}<button className="icon-button" onClick={close} aria-label="Close player">×</button></header>
+        {playback.audio && playback.musicTrackId && lyricsOpen && <LyricsPanel trackId={playback.musicTrackId} onClose={() => setLyricsOpen(false)} />}<header className="player-head"><div><span className="live-dot" /> NOW PLAYING <strong>{playback.title}</strong></div>{playback.audio && playback.musicTrackId && <button className="lyrics-toggle" aria-expanded={lyricsOpen} aria-controls="music-lyrics" onClick={() => setLyricsOpen(open => !open)}>Lyrics</button>}{playback.itemKey && !playback.roomId && <button className="watchalong-button" onClick={onWatchalong}>Watchalong</button>}<button className="icon-button" onClick={close} data-tv-close aria-label="Close player">×</button></header>
         <div className={`video-frame ${playback.audio ? 'audio-frame' : ''}`}><Suspense fallback={<div className="player-loading"><span className="spinner" /> Loading player…</div>}><Player key={`${playback.itemKey || playback.url}:${playback.roomId || ""}`} source={playback} /></Suspense></div>
       </section>
     </div>
@@ -199,6 +215,7 @@ function VideoOverlay({ playback, onClose, onWatchalong }: { playback: Playback;
 }
 
 function App() {
+  useTvNavigation();
   const libraryRequest = useRef(0);
   const playbackRequest = useRef(0);
   const detailRequest = useRef<AbortController | null>(null);

@@ -21,8 +21,7 @@ export function registerCasting(app: Express, options: { auth: RequestHandler; w
     const setHeader = res.setHeader.bind(res);
     res.setHeader = ((name: string, value: any) => {
       if (name.toLowerCase() === 'cache-control' && typeof value === 'string') {
-        const seconds = Math.max(0, Math.floor((grant.expires - Date.now()) / 1000));
-        value = value.replace(/((?:s-)?max-age=)(\d+)/g, (_match: string, prefix: string, age: string) => `${prefix}${Math.min(Number(age), seconds)}`);
+        value = 'private, no-store';
       }
       return setHeader(name, value);
     }) as typeof res.setHeader;
@@ -43,6 +42,9 @@ export function registerCasting(app: Express, options: { auth: RequestHandler; w
     req.url = match[2]; next();
   });
   app.post('/api/cast', options.auth, options.wrap(async (req: Request, res: any) => {
+    if (grants.size >= 1000 || [...grants.values()].filter(grant => grant.owner === req.sessionID && grant.expires > Date.now()).length >= 100) {
+      throw Object.assign(new Error('Too many active cast links. Sign out and back in to clear them.'), { status: 429 });
+    }
     const url = String(req.body.url || '');
     if (!validPath(url) || url.includes('/subtitles/') || url.includes('/captions/')) throw Object.assign(new Error('Invalid cast source.'), { status: 400 });
     await options.validate(req, url);
@@ -63,4 +65,5 @@ export function registerCasting(app: Express, options: { auth: RequestHandler; w
     res.json({ url: `/api/cast-media/${token}${url}`, subtitles: subtitles.map(track => ({ ...track, src: `/api/cast-media/${token}${track.src}` })) });
   }));
   const expiry = setInterval(() => { for (const [key, grant] of grants) if (grant.expires < Date.now()) grants.delete(key); }, 60_000); expiry.unref();
+  return { revokeOwner(owner: string) { for (const [key, grant] of grants) if (grant.owner === owner) grants.delete(key); } };
 }

@@ -26,6 +26,13 @@ button { color: inherit; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--lime); outline-offset: 3px; }
 ::selection { background: var(--lime); color: #141414; }
 
+/* Only TV browsers (or an explicit ?tv=1 opt-in) receive remote focus styling. */
+html[data-tv-navigation="true"] :focus { outline: 3px solid #fff !important; outline-offset: -3px; box-shadow: 0 0 0 3px #e50914; }
+html[data-tv-navigation="true"] :is(button,a,input,select,[tabindex]) { scroll-margin-block: 125px; scroll-margin-inline: 10px; }
+.plex-phone-login { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 12px; padding: 12px 18px; border: 1px solid #555; border-radius: 4px; background: #252525; color: #fff; cursor: pointer; }
+.plex-phone-login:disabled { opacity: .55; cursor: wait; }
+.plex-qr { display: block; width: min(100%, 320px); height: auto; border-radius: 4px; background: #fff; }
+
 .app-shell { min-height: 100vh; overflow: hidden; position: relative; background: radial-gradient(ellipse at 90% -5%, rgba(91,104,54,.12), transparent 35%), #141414; }
 .ambient { position: absolute; z-index: 0; pointer-events: none; filter: blur(100px); opacity: .12; border-radius: 50%; }
 .ambient-one { width: 360px; height: 280px; right: -150px; top: 320px; background: #7b9e31; }

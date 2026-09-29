@@ -8,16 +8,38 @@ import { AudioPlayer, AudioSkin, Audio } from '@videojs/react/audio';
 import '@videojs/react/audio/skin.css';
 import { useEffect, useRef, useState } from 'react';
 import { GoogleCast } from '@videojs/react/extensions/google-cast';
+import { useContainer } from '@videojs/react';
 
 export type SubtitleTrack = { src: string; label: string; language: string };
 export type PlayerSource = { url: string; mode: 'direct' | 'hls' | 'dash'; contentType?: string; streamId?: string; live?: boolean; audio?: boolean; durationSeconds?: number; subtitles?: SubtitleTrack[]; itemKey?: string; initialTime?: number; roomId?: string; onPosition?: (seconds: number) => void; onProgress?: (seconds: number, duration: number, closing?: boolean) => void };
 
 export default function Player({ source }: { source: PlayerSource }) {
   if (source.live) {
-    return <LiveVideoPlayer><LiveVideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} live /></LiveVideoSkin></LiveVideoPlayer>;
+    return <LiveVideoPlayer><LiveVideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} live /><RemoteControls /></LiveVideoSkin></LiveVideoPlayer>;
   }
-  if (source.audio) return <AudioPlayer><AudioSkin><Audio src={source.url} autoPlay preload="auto" /></AudioSkin></AudioPlayer>;
-  return <VideoPlayer><VideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} /><PlaybackProgress source={source} /></VideoSkin>{source.roomId && <WatchalongSync roomId={source.roomId} />}</VideoPlayer>;
+  if (source.audio) return <AudioPlayer><AudioSkin><Audio src={source.url} autoPlay preload="auto" /><RemoteControls /></AudioSkin></AudioPlayer>;
+  return <VideoPlayer><VideoSkin className="vjs-skin" style={{ width: '100%', aspectRatio: '16 / 9' }}><CastingMedia source={source} /><PlaybackProgress source={source} /><RemoteControls /></VideoSkin>{source.roomId && <WatchalongSync roomId={source.roomId} />}</VideoPlayer>;
+}
+
+function RemoteControls() {
+  const store = usePlayer();
+  const container = useContainer();
+  useEffect(() => {
+    if (!container || document.documentElement.dataset.tvNavigation !== 'true') return;
+    const element = container;
+    element.setAttribute('data-tv-player', '');
+    // Locks keep the packaged controls reachable by a remote even when no pointer moves.
+    const release = typeof store.requestControlsLock === 'function' ? store.requestControlsLock() : undefined;
+    const command = (event: Event) => {
+      if (!store.target || store.destroyed) return;
+      const key = (event as CustomEvent<string>).detail;
+      if (key === 'MediaPause' || key === 'MediaPlayPause' && !store.state.paused) store.pause();
+      else if (key === 'MediaPlay' || key === 'MediaPlayPause') void store.play().catch(() => {});
+    };
+    element.addEventListener('tv-media-key', command);
+    return () => { release?.(); element.removeAttribute('data-tv-player'); element.removeEventListener('tv-media-key', command); };
+  }, [container, store]);
+  return null;
 }
 
 function PlaybackProgress({ source }: { source: PlayerSource }) {
