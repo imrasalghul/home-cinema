@@ -46,6 +46,31 @@ A self-hosted web interface for the media services you run. Browse and play movi
 
 The application reads the configured Invidious API for YouTube search, metadata, comments, channels, and media stream information. Use an Invidious instance you trust and configure it according to that instance's documentation.
 
+## Direct links and Redirector
+
+Open these paths on your Home Cinema host to jump directly to a section:
+
+| Path | Opens |
+| --- | --- |
+| `/movies` | Movies |
+| `/series` | Series |
+| `/tv` | Live TV |
+| `/music` | Music |
+| `/youtube` | YouTube |
+| `/youtube/watch?v=VIDEOID` | The YouTube video with that ID |
+| `/youtube/@CREATORUSERNAME` | The creator page for that handle |
+
+You can use [Redirector for Firefox](https://addons.mozilla.org/en-US/firefox/addon/redirector/) or [Redirector for Chromium](https://chrome.google.com/webstore/detail/redirector/ocgpenflpmgnfapjedencafcfakcekcd) to send YouTube links to this app. In Redirector, create a rule for each mapping below. Choose **Wildcard** for the rule's processing type and **Main window (address bar)** as where it applies. Replace `home-cinema.example.com` with the hostname where you run this app.
+
+| Redirect from | Redirect to |
+| --- | --- |
+| `https://*youtube.com/watch?*v=*` | `https://home-cinema.example.com/youtube/watch?$2v=$3` |
+| `https://youtube.com/@*` | `https://home-cinema.example.com/youtube/@$1` |
+| `https://www.youtube.com/@*` | `https://home-cinema.example.com/youtube/@$1` |
+| `https://www.youtube.com/channel/*` | `https://home-cinema.example.com/youtube/channel/$1` |
+
+The watch rule keeps the video ID and any other query parameters, such as a playlist or start time. The channel rules support YouTube's `@handle` and channel-ID URL formats. Redirector is optional; the Home Cinema paths also work when opened directly.
+
 ## Run the published Docker image
 
 The Compose configuration uses `ghcr.io/imrasalghul/home-cinema:latest`. On a host with Docker Engine and the Compose plugin:
@@ -63,6 +88,28 @@ The Compose configuration uses `ghcr.io/imrasalghul/home-cinema:latest`. On a ho
 5. Open the address and port published by Compose, then sign in with Plex.
 
 The Compose defaults mount `/media/library/movies` and `/media/library/tv` read-only and publish port `3210`. Change the host-side mount paths in `docker-compose.yml` for your server. Set `APP_PUBLIC_URL` to the browser-facing HTTPS URL when Plex sign-in must return to a public hostname. A reverse proxy or tunnel should forward to the Compose-published port.
+
+## Use Cloudflare Tunnel
+
+Cloudflare Tunnel can publish Home Cinema on a hostname you control without opening an inbound router port. You need a domain configured in Cloudflare and a running Home Cinema container. See Cloudflare's [Tunnel quick start](https://developers.cloudflare.com/tunnel/get-started/) for dashboard details.
+
+1. In the Cloudflare dashboard, open **Networking → Tunnels** and create a remotely managed tunnel, or select an existing tunnel. Choose **Cloudflared** as the connector and run the provided connector command on the Docker host or another machine that can reach it. Keep the tunnel token private.
+2. Open the tunnel's **Routes** section and add a **Published application** route. Enter the public hostname you want to use, for example `media.example.com`, and set the service URL to `http://<docker-host-lan-ip>:3210`. If `cloudflared` runs directly on the Docker host, you can use `http://127.0.0.1:3210`. When it runs in a separate container, use an address reachable from that container; its own `localhost` points to the `cloudflared` container.
+3. Set `APP_PUBLIC_URL` in `.env` to the exact HTTPS hostname, for example:
+
+   ```dotenv
+   APP_PUBLIC_URL=https://media.example.com
+   ```
+
+4. Apply the setting and start the app:
+
+   ```sh
+   docker compose up -d --no-build home-cinema
+   ```
+
+5. Open the HTTPS hostname and sign in with Plex. The Cloudflare route forwards requests to the app's port `3210`; the browser-facing connection uses HTTPS while the tunnel can connect to the app over HTTP on your private network.
+
+No inbound port forwarding is needed; `cloudflared` creates outbound connections to Cloudflare. Leave Cloudflare caching at its defaults and do not add a **Cache Everything** rule for the app, since authenticated media and API routes are private. See Cloudflare's [published application routing guide](https://developers.cloudflare.com/tunnel/concepts/routing/) and [Tunnel overview](https://developers.cloudflare.com/tunnel/) for more information.
 
 ## Build from source
 

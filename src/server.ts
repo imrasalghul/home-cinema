@@ -795,6 +795,24 @@ app.get('/api/youtube/search', requirePlex, asyncRoute(async (req, res) => {
   res.json({ results: safeYouTubeRows(videos).slice(0, 30) });
 }));
 
+app.get('/api/youtube/resolve-channel', requirePlex, asyncRoute(async (req, res) => {
+  const handle = String(req.query.handle || '').trim().replace(/^@/, '');
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(handle)) throw Object.assign(new Error('Invalid YouTube creator handle.'), { status: 400 });
+  const rows = await invidiousJson(`search?q=${encodeURIComponent(`@${handle}`)}&type=channel&hl=en-US`);
+  const channels: MediaItem[] = (Array.isArray(rows) ? rows : rows.channels || rows.results || [])
+    .filter((item: MediaItem) => item.type === 'channel' && /^[A-Za-z0-9_-]{24}$/.test(String(item.authorId || '')));
+  const normalizedHandle = handle.toLocaleLowerCase();
+  const channel = channels.find((item) => {
+    const authorUrl = String(item.authorUrl || '');
+    let urlHandle = '';
+    try { urlHandle = new URL(authorUrl, 'https://www.youtube.com').pathname.match(/^\/@([^/]+)\/?$/)?.[1] || ''; } catch { /* compare the display name below */ }
+    return urlHandle.toLocaleLowerCase() === normalizedHandle || String(item.author || '').replace(/^@/, '').toLocaleLowerCase() === normalizedHandle;
+  });
+  if (!channel) throw Object.assign(new Error(`Could not resolve YouTube creator @${handle}.`), { status: 404 });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ id: String(channel.authorId), name: String(channel.author || `@${handle}`) });
+}));
+
 function safeYouTubeRows(rows: MediaItem[]) {
   return rows.filter((item) => (!item.type || item.type === 'video') && /^[A-Za-z0-9_-]{11}$/.test(String(item.videoId || ''))).map((item) => ({
     id: item.videoId, title: item.title || 'Untitled video', author: item.author || '', authorId: item.authorId || null,

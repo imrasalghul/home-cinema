@@ -41,6 +41,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .main-nav button.active::after { content: ''; position: absolute; bottom: -1px; left: 19px; right: 19px; height: 2px; background: var(--lime); border-radius: 2px 2px 0 0; }
 .nav-live-dot { display: inline-block; width: 5px; height: 5px; margin: 0 0 2px 6px; border-radius: 50%; background: var(--red); box-shadow: 0 0 9px rgba(255,89,101,.65); }
 .top-actions { display: flex; align-items: center; gap: 20px; margin-left: auto; }
+.header-search { display: flex; align-items: center; flex: 0 0 auto; }
+.header-search-field { display: block; width: 0; margin-right: 0; overflow: hidden; opacity: 0; pointer-events: none; transition: width .2s ease, margin-right .2s ease, opacity .16s ease; }
+.header-search.expanded .header-search-field { width: clamp(150px, 22vw, 280px); margin-right: 8px; opacity: 1; pointer-events: auto; }
+.header-search-field input { width: 100%; height: 36px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; outline: 0; background: rgba(255,255,255,.045); color: var(--ink); font-size: 12px; }
+.header-search-field input::placeholder { color: #858585; }
+.header-search-toggle { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 50%; background: transparent; color: #c8c8c8; cursor: pointer; }
+.header-search-toggle:hover, .header-search-toggle[aria-expanded="true"] { border-color: var(--line); background: rgba(255,255,255,.06); color: var(--ink); }
+.header-search-toggle svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .search-box { display: flex; align-items: center; gap: 8px; width: 215px; height: 36px; padding: 0 11px; color: var(--muted); background: rgba(255,255,255,.045); border: 1px solid var(--line); border-radius: 8px; }
 .search-box span { font-size: 20px; line-height: 1; transform: rotate(-15deg); }
 .search-box input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; }
@@ -371,6 +380,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .brand { font-size: 10px; }
   .brand-mark { width: 30px; height: 30px; }
   .top-actions { gap: 9px; }
+  .header-search.expanded .header-search-field { width: min(38vw, 180px); }
+  .header-search-field input { height: 34px; padding: 0 8px; font-size: 11px; }
+  .header-search-toggle { width: 32px; height: 34px; flex-basis: 32px; }
   .search-box { width: 36px; padding: 0 8px; border: 0; background: transparent; }
   .search-box input { position: absolute; top: 63px; left: 15px; width: calc(100% - 30px); height: 38px; padding: 0 13px 0 36px; border: 1px solid var(--line); border-radius: 7px; background: #202020; opacity: 0; pointer-events: none; transition: opacity .2s; }
   .search-box:focus-within input { opacity: 1; pointer-events: auto; }

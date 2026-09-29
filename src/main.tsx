@@ -45,6 +45,27 @@ type CreatorSubscription = { id: string; name: string };
 type SavedYouTubeVideo = YouTubeResult;
 type ProfileData = { subscriptions: CreatorSubscription[]; watchlist: SavedYouTubeVideo[]; watchedVideoIds: string[]; mediaProgress: Record<string, { seconds: number; duration: number; updatedAt: number }> };
 type Playback = PlayerSource & { title: string; audio?: boolean; musicTrackId?: string };
+type AppTab = 'movies' | 'tv' | 'live' | 'youtube' | 'music';
+type DirectYouTubeRoute = { kind: 'video'; id: string } | { kind: 'handle'; handle: string } | { kind: 'channel'; id: string };
+
+function routeFromLocation(): { tab: AppTab; youtube: DirectYouTubeRoute | null } {
+  let pathname = window.location.pathname;
+  try { pathname = decodeURIComponent(pathname); } catch { /* treat malformed escapes as an unmatched path */ }
+  if (pathname === '/series' || pathname === '/series/') return { tab: 'tv', youtube: null };
+  if (pathname === '/movies' || pathname === '/movies/') return { tab: 'movies', youtube: null };
+  if (pathname === '/tv' || pathname === '/tv/') return { tab: 'live', youtube: null };
+  if (pathname === '/music' || pathname === '/music/') return { tab: 'music', youtube: null };
+  if (pathname === '/youtube' || pathname === '/youtube/') return { tab: 'youtube', youtube: null };
+  if (pathname === '/youtube/watch' || pathname === '/youtube/watch/') {
+    const id = new URLSearchParams(window.location.search).get('v') || '';
+    return { tab: 'youtube', youtube: /^[A-Za-z0-9_-]{11}$/.test(id) ? { kind: 'video', id } : null };
+  }
+  const handle = pathname.match(/^\/youtube\/@([A-Za-z0-9._-]{1,64})\/?$/)?.[1];
+  if (handle) return { tab: 'youtube', youtube: { kind: 'handle', handle } };
+  const channelId = pathname.match(/^\/youtube\/channel\/([A-Za-z0-9_-]{24})\/?$/)?.[1];
+  if (channelId) return { tab: 'youtube', youtube: { kind: 'channel', id: channelId } };
+  return { tab: 'movies', youtube: null };
+}
 
 function normalizeMediaTitle(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().replace(/[^a-z0-9]/g, '');
@@ -188,7 +209,12 @@ function App() {
   const playbackPosition = useRef(0);
   const [status, setStatus] = useState<Status | null>(null);
   const siteName = status?.siteName || 'Media Home';
-  const [tab, setTab] = useState<'movies' | 'tv' | 'live' | 'youtube' | 'music'>('movies');
+  const [tab, setTab] = useState<AppTab>(() => routeFromLocation().tab);
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const headerSearchRef = useRef<HTMLInputElement>(null);
+  const [directYouTubeRoute, setDirectYouTubeRoute] = useState<DirectYouTubeRoute | null>(() => routeFromLocation().youtube);
+  const handledDirectRoute = useRef('');
+  const youtubeRouteGeneration = useRef(0);
   const [sections, setSections] = useState<Section[]>([]);
   const [activeSection, setActiveSection] = useState('');
   const [items, setItems] = useState<Item[]>([]);
@@ -234,7 +260,7 @@ function App() {
   const [youtubeSearch, setYoutubeSearch] = useState('');
   const [youtubeResults, setYoutubeResults] = useState<YouTubeResult[]>([]);
   const [youtubeLoading, setYoutubeLoading] = useState(false);
-  const [youtubeView, setYoutubeView] = useState<'search' | 'subscriptions' | 'channel' | 'watchlist'>('search');
+  const [youtubeView, setYoutubeView] = useState<'search' | 'subscriptions' | 'channel' | 'watchlist'>('subscriptions');
   const [youtubeVideo, setYoutubeVideo] = useState<YouTubeVideo | null>(null);
   const [youtubeComments, setYoutubeComments] = useState<YouTubeComment[]>([]);
   const [youtubeCommentsLoading, setYoutubeCommentsLoading] = useState(false);
@@ -250,6 +276,48 @@ function App() {
   const [mediaProgress, setMediaProgress] = useState<ProfileData['mediaProgress']>({});
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [subscriptions, setSubscriptions] = useState<CreatorSubscription[]>([]);
+
+  const headerSearchValue = tab === 'music' ? musicSearch : tab === 'live' ? channelSearch : tab === 'youtube' ? youtubeSearch : search;
+  const headerSearchPlaceholder = tab === 'movies' ? 'Search movies' : tab === 'tv' ? 'Search series' : tab === 'live' ? 'Search channels' : tab === 'music' ? 'Search music' : 'Search YouTube';
+
+  useEffect(() => {
+    if (searchExpanded) headerSearchRef.current?.focus();
+  }, [searchExpanded, tab]);
+
+  function updateHeaderSearch(value: string) {
+    if (tab === 'movies' || tab === 'tv') setSearch(value);
+    else if (tab === 'live') setChannelSearch(value);
+    else if (tab === 'music') { setMusicAlbumOpen(false); setMusicSearch(value); }
+    else { setYoutubeSearch(value); setYoutubeView('search'); }
+  }
+
+  function setBrowserPath(path: string) {
+    if (`${window.location.pathname}${window.location.search}` !== path) window.history.pushState({}, '', path);
+  }
+
+  function navigateSection(nextTab: AppTab) {
+    youtubeRouteGeneration.current++;
+    const paths: Record<AppTab, string> = { movies: '/movies', tv: '/series', live: '/tv', music: '/music', youtube: '/youtube' };
+    setBrowserPath(paths[nextTab]);
+    setTab(nextTab); setDirectYouTubeRoute(null); setSearch(''); setSearchExpanded(false);
+    setYoutubeVideo(null); setYoutubeChannel(null); setYoutubeView(nextTab === 'youtube' ? 'subscriptions' : 'search');
+    setShow(null); setSeason(null); setEpisodes([]); setMovieDetails(null);
+    setRequestSeries(null); setRequestSeriesDetails(null); setRequestSeasonDetails(null);
+    if (nextTab === 'music') { setMusicAlbumOpen(false); setMusicTracks([]); }
+  }
+
+  useEffect(() => {
+    const syncRoute = () => {
+      youtubeRouteGeneration.current++;
+      const route = routeFromLocation();
+      setTab(route.tab); setDirectYouTubeRoute(route.youtube); setSearchExpanded(false);
+      setYoutubeVideo(null); setYoutubeChannel(null); setYoutubeView(route.tab === 'youtube' ? 'subscriptions' : 'search');
+      setSearch(''); setShow(null); setSeason(null); setEpisodes([]); setMovieDetails(null);
+      setRequestSeries(null); setRequestSeriesDetails(null); setRequestSeasonDetails(null);
+    };
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, []);
 
   useEffect(() => {
     if (tab !== 'live' && playback?.live) {
@@ -717,6 +785,9 @@ function App() {
   }
 
   async function playYoutube(video: YouTubeResult) {
+    youtubeRouteGeneration.current++;
+    setBrowserPath(`/youtube/watch?v=${encodeURIComponent(video.id)}`);
+    setTab('youtube'); setDirectYouTubeRoute(null);
     const generation = ++playbackRequest.current;
     setPageError(''); setLoading(true);
     try {
@@ -730,8 +801,42 @@ function App() {
 
   function openYoutubeChannel(id: string | null, name: string) {
     if (!id) return;
+    youtubeRouteGeneration.current++;
+    setBrowserPath(`/youtube/channel/${encodeURIComponent(id)}`);
+    setTab('youtube'); setDirectYouTubeRoute(null);
     setYoutubeChannel({ id, name }); setYoutubeVideo(null); setYoutubeView('channel');
   }
+
+  async function openYoutubeHandle(handle: string) {
+    const generation = ++youtubeRouteGeneration.current;
+    setYoutubeView('channel'); setYoutubeChannel(null); setYoutubeVideo(null); setPageError(''); setLoading(true);
+    try {
+      const creator = await request<CreatorSubscription>(`/api/youtube/resolve-channel?handle=${encodeURIComponent(handle)}`);
+      if (generation === youtubeRouteGeneration.current) setYoutubeChannel(creator);
+    } catch (error) {
+      if (generation === youtubeRouteGeneration.current) setPageError(error instanceof Error ? error.message : `Could not find YouTube creator @${handle}.`);
+    } finally { if (generation === youtubeRouteGeneration.current) setLoading(false); }
+  }
+
+  useEffect(() => {
+    if (!status?.authenticated) return;
+    if (!directYouTubeRoute) { handledDirectRoute.current = ''; return; }
+    const route = directYouTubeRoute;
+    const key = route.kind === 'video' ? `video:${route.id}` : route.kind === 'handle' ? `handle:${route.handle}` : `channel:${route.id}`;
+    if (handledDirectRoute.current === key) return;
+    handledDirectRoute.current = key;
+    setDirectYouTubeRoute(null);
+    setTab('youtube');
+    if (route.kind === 'video') {
+      setYoutubeView('search');
+      void playYoutube({ id: route.id, title: 'YouTube video', author: '', authorId: null, durationSeconds: 0, thumbnail: null, publishedText: '', viewCountText: '' });
+    } else if (route.kind === 'handle') {
+      setBrowserPath(`/youtube/@${encodeURIComponent(route.handle)}`);
+      void openYoutubeHandle(route.handle);
+    } else {
+      openYoutubeChannel(route.id, route.id);
+    }
+  }, [status?.authenticated, directYouTubeRoute]);
 
   async function toggleSubscription(creator: CreatorSubscription) {
     if (!profileLoaded || profilePending.current.has(creator.id)) return;
@@ -831,14 +936,22 @@ function App() {
       <header className="topbar">
         <a className="brand" href="#top"><span>{siteName}</span></a>
         <nav className="main-nav" aria-label="Media sections">
-          <button className={tab === 'music' ? 'active' : ''} onClick={() => { setTab('music'); setSearch(''); setMusicAlbumOpen(false); setMusicTracks([]); setShow(null); setRequestSeries(null); setRequestSeriesDetails(null); setRequestSeasonDetails(null); }}>Music</button>
-          <button className={tab === 'movies' ? 'active' : ''} onClick={() => { setTab('movies'); setSearch(''); setShow(null); setSeason(null); setRequestSeries(null); setRequestSeriesDetails(null); setRequestSeasonDetails(null); }}>Movies</button>
-          <button className={tab === 'tv' ? 'active' : ''} onClick={() => { setTab('tv'); setSearch(''); setShow(null); setSeason(null); setRequestSeries(null); setRequestSeriesDetails(null); setRequestSeasonDetails(null); }}>Series</button>
-          <button className={tab === 'live' ? 'active' : ''} onClick={() => { setTab('live'); setSearch(''); setShow(null); setRequestSeries(null); setRequestSeriesDetails(null); setRequestSeasonDetails(null); }}>Live TV <span className="nav-live-dot" /></button>
-          <button className={tab === 'youtube' ? 'active' : ''} onClick={() => { setTab('youtube'); setSearch(''); setShow(null); setRequestSeries(null); setRequestSeriesDetails(null); setRequestSeasonDetails(null); }}>YouTube</button>
+          <button className={tab === 'music' ? 'active' : ''} onClick={() => navigateSection('music')}>Music</button>
+          <button className={tab === 'movies' ? 'active' : ''} onClick={() => navigateSection('movies')}>Movies</button>
+          <button className={tab === 'tv' ? 'active' : ''} onClick={() => navigateSection('tv')}>Series</button>
+          <button className={tab === 'live' ? 'active' : ''} onClick={() => navigateSection('live')}>Live TV <span className="nav-live-dot" /></button>
+          <button className={tab === 'youtube' ? 'active' : ''} onClick={() => navigateSection('youtube')}>YouTube</button>
         </nav>
         <div className="top-actions">
-          {['movies', 'tv'].includes(tab) && <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tab === 'tv' ? 'Search series' : 'Search movies'} /></label>}
+          <div className={`header-search ${searchExpanded ? 'expanded' : ''}`}>
+            <label className="header-search-field">
+              <span className="sr-only">{headerSearchPlaceholder}</span>
+              <input ref={headerSearchRef} value={headerSearchValue} onChange={(event) => updateHeaderSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { setSearchExpanded(false); event.currentTarget.blur(); } }} placeholder={headerSearchPlaceholder} aria-label={headerSearchPlaceholder} autoComplete="off" tabIndex={searchExpanded ? 0 : -1} />
+            </label>
+            <button className="header-search-toggle" type="button" aria-label={searchExpanded ? 'Close search' : 'Open search'} aria-expanded={searchExpanded} onClick={() => { setSearchExpanded((expanded) => !expanded); if (tab === 'youtube') setYoutubeView('search'); }}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6" /><path d="m16 16 4.2 4.2" /></svg>
+            </button>
+          </div>
           <NotificationBell onJoin={joinWatchalong} /><div className="user-menu" title={`Signed in as ${status.user || 'Plex user'}`}><span className="user-avatar">{(status.user || 'P').slice(0, 1).toUpperCase()}</span><button onClick={signOut}>{status.user || 'Plex'}<span className="chevron">⌄</span></button></div>
         </div>
       </header>
@@ -846,10 +959,10 @@ function App() {
       <main id="top" className="page-content">
         {tab === 'youtube' ? (
           <section className="youtube-section">
-            <div className="youtube-subnav"><button className={youtubeView === 'search' ? 'active' : ''} onClick={() => { setYoutubeVideo(null); setYoutubeView('search'); }}>Search</button><button className={youtubeView === 'subscriptions' ? 'active' : ''} onClick={() => { setYoutubeVideo(null); setYoutubeView('subscriptions'); }}>Subscriptions <span>{subscriptions.length}</span></button><button className={youtubeView === 'watchlist' ? 'active' : ''} onClick={() => { setYoutubeVideo(null); setYoutubeView('watchlist'); }}>Watchlist <span>{watchlist.length}</span></button></div>
+            <div className="youtube-subnav"><button className={youtubeView === 'search' ? 'active' : ''} onClick={() => { setBrowserPath('/youtube'); setYoutubeVideo(null); setYoutubeView('search'); }}>Search</button><button className={youtubeView === 'subscriptions' ? 'active' : ''} onClick={() => { setBrowserPath('/youtube'); setYoutubeVideo(null); setYoutubeView('subscriptions'); }}>Subscriptions <span>{subscriptions.length}</span></button><button className={youtubeView === 'watchlist' ? 'active' : ''} onClick={() => { setBrowserPath('/youtube'); setYoutubeVideo(null); setYoutubeView('watchlist'); }}>Watchlist <span>{watchlist.length}</span></button></div>
             <label className="history-import">Import watch history<input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importWatchHistory(file); event.target.value = ''; }} /></label>
             {youtubeVideo ? <>
-              <button className="back-link youtube-back" onClick={() => setYoutubeVideo(null)}>← Back to {youtubeView === 'search' ? 'search' : youtubeView === 'channel' ? youtubeChannel?.name : 'videos'}</button>
+              <button className="back-link youtube-back" onClick={() => { setBrowserPath(youtubeView === 'channel' && youtubeChannel ? `/youtube/channel/${encodeURIComponent(youtubeChannel.id)}` : '/youtube'); setYoutubeVideo(null); }}>← Back to {youtubeView === 'search' ? 'search' : youtubeView === 'channel' ? youtubeChannel?.name : 'videos'}</button>
               <div className="youtube-watch-layout"><div className="youtube-watch-main">
                 <Suspense fallback={<div className="player-loading"><span className="spinner" /> Loading player…</div>}><Player key={youtubeVideo.id} source={{ mode: youtubeVideo.mode, url: youtubeVideo.streamUrl, contentType: youtubeVideo.contentType, durationSeconds: youtubeVideo.durationSeconds, subtitles: youtubeVideo.captions, onProgress: (seconds, duration, closing) => { if (duration > 0 && seconds / duration >= 0.8) markYoutubeSeen(youtubeVideo.id, closing); } }} /></Suspense>
                 <h2 className="youtube-video-title">{youtubeVideo.title}</h2>
@@ -858,13 +971,12 @@ function App() {
                 <section className="youtube-comments"><h3>Comments <span>{youtubeComments.length ? youtubeComments.length : ''}</span></h3>{youtubeCommentsError ? <p className="seerr-hint">{youtubeCommentsError}</p> : youtubeCommentsLoading ? <p className="seerr-hint">Loading comments…</p> : youtubeComments.length === 0 ? <p className="seerr-hint">No comments available.</p> : youtubeComments.map((comment, index) => <YouTubeCommentThread key={`${youtubeVideo.id}-${comment.id || index}`} videoId={youtubeVideo.id} comment={comment} />)}</section>
               </div><aside className="youtube-related"><h3>Related videos</h3>{youtubeVideo.related.map((video) => <button className="related-video" key={video.id} onClick={() => void playYoutube(video)}><span className="related-thumb">{video.thumbnail && <img src={video.thumbnail} alt="" loading="lazy" />}{watchedVideoIds.includes(video.id) && <span className="youtube-seen-badge" aria-label="Watched">✓</span>}</span><span><strong>{video.title}</strong><small>{video.author}{video.viewCountText ? ` · ${video.viewCountText}` : ''}</small></span></button>)}</aside></div>
             </> : youtubeView === 'search' ? <>
-              <label className="youtube-search"><span>⌕</span><input value={youtubeSearch} onChange={(event) => setYoutubeSearch(event.target.value)} placeholder="Search YouTube" aria-label="Search YouTube" autoComplete="off" /></label>
               {youtubeLoading && <p className="seerr-hint">Searching YouTube through Invidious…</p>}
               {youtubeSearch.trim().length < 2 ? <p className="seerr-hint">Search videos through Invidious.</p> : youtubeResults.length === 0 && !youtubeLoading ? <EmptyState title="No videos found" text="Try another search." /> : <div className="media-grid youtube-grid">{youtubeResults.map(youtubeCard)}</div>}
-            </> : youtubeView === 'channel' && youtubeChannel ? <>
-              <button className="back-link youtube-back" onClick={() => { setYoutubeChannel(null); setYoutubeView('subscriptions'); }}>← Back</button><div className="channel-heading"><div><span className="eyebrow">YOUTUBE CREATOR</span><h2>{youtubeChannel.name}</h2></div><button className="subscribe-button" onClick={() => toggleSubscription(youtubeChannel)}>{subscriptions.some((item) => item.id === youtubeChannel.id) ? 'Subscribed ✓' : 'Subscribe'}</button></div>
+            </> : youtubeView === 'channel' ? youtubeChannel ? <>
+              <button className="back-link youtube-back" onClick={() => { setBrowserPath('/youtube'); setYoutubeChannel(null); setYoutubeView('subscriptions'); }}>← Back</button><div className="channel-heading"><div><span className="eyebrow">YOUTUBE CREATOR</span><h2>{youtubeChannel.name}</h2></div><button className="subscribe-button" onClick={() => toggleSubscription(youtubeChannel)}>{subscriptions.some((item) => item.id === youtubeChannel.id) ? 'Subscribed ✓' : 'Subscribe'}</button></div>
               {youtubeChannelVideos.length ? <div className="media-grid youtube-grid">{youtubeChannelVideos.map(youtubeCard)}</div> : <p className="seerr-hint">{youtubeChannelLoading ? 'Loading creator videos…' : 'No recent videos found.'}</p>}
-            </> : youtubeView === 'watchlist' ? <>
+            </> : <p className="seerr-hint">{loading ? 'Looking up this YouTube creator…' : 'The creator page could not be loaded.'}</p> : youtubeView === 'watchlist' ? <>
               <div className="channel-heading"><div><span className="eyebrow">SAVED VIDEOS</span><h2>Watchlist</h2></div><span className="item-count">{watchlist.length} VIDEOS</span></div>
               {watchlist.length ? <div className="media-grid youtube-grid">{watchlist.map(youtubeCard)}</div> : <EmptyState title="Your watchlist is empty" text="Save videos from search results, creator pages, and your subscriptions to watch later." />}
             </> : subscriptions.length === 0 ? <EmptyState title="No subscriptions yet" text="Subscribe to creators from a video or channel page. Their latest videos will appear here." /> : <>
@@ -878,7 +990,6 @@ function App() {
         {tab === 'music' && <section className="music-section">
           {musicAlbumOpen && <button className="back-link" onClick={() => { detailRequest.current?.abort(); setMusicAlbumOpen(false); setMusicTracks([]); }}>← All albums</button>}
           {!status?.navidrome.configured && <EmptyState title="Music server is not configured" text="Set the Navidrome server and login in the app’s server environment." />}
-          <label className="youtube-search"><span>⌕</span><input value={musicSearch} onChange={(event) => { setMusicAlbumOpen(false); setMusicSearch(event.target.value); }} placeholder="Search music" aria-label="Search music" autoComplete="off" /></label>
           {musicSearch.trim().length >= 2 && musicAlbums.length > 0 && <><div className="section-heading music-results-heading"><div><span className="eyebrow">MATCHING ALBUMS</span></div></div><div className="media-grid music-grid">{musicAlbums.map((album) => <button className="music-album" key={album.id} onClick={() => void openAlbum(album)}><div className="music-album-cover">{album.coverArt ? <img src={`/api/music/cover/${encodeURIComponent(album.coverArt)}`} alt="" loading="lazy" /> : <span>♪</span>}</div><strong>{album.name}</strong><span className="media-meta">{album.artist}{album.year ? ` · ${album.year}` : ''}</span></button>)}</div></>}
           {musicTracks.length > 0 && <div className="music-track-list">{musicTracks.map((track, index) => <button className={`music-track ${musicPlaying === track.id ? 'playing' : ''}`} key={track.id} onClick={() => void playMusic(track)}><span className="music-track-number">{index + 1}</span>{track.coverArt ? <img src={`/api/music/cover/${encodeURIComponent(track.coverArt)}`} alt="" loading="lazy" /> : <span className="music-cover-placeholder">♪</span>}<span className="music-track-info"><strong>{track.title}</strong><small>{track.artist} · {track.album}</small></span><span className="music-duration">{track.duration ? durationLabel(track.duration * 1000) : ''}</span><span className="music-play">▶</span></button>)}</div>}
           {musicLoading && <p className="seerr-hint">Loading music…</p>}
@@ -899,7 +1010,7 @@ function App() {
               <header className="live-watch-head"><div><span className="live-dot" /><strong>{playback.title}</strong><span>Live</span></div><button className="icon-button" onClick={stopLivePlayback} aria-label="Close live TV player">×</button></header>
               <div className="video-frame"><Suspense fallback={<div className="player-loading"><span className="spinner" /> Loading channel…</div>}><Player key={playback.streamId} source={playback} /></Suspense></div>
             </section>}
-            <div className="epg-toolbar"><label className="search-box epg-search"><span>⌕</span><input value={channelSearch} onChange={(event) => setChannelSearch(event.target.value)} placeholder="Find a channel" /></label><span className="epg-date">{new Date(epgNow).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span></div>
+            <div className="epg-toolbar"><span className="epg-date">{new Date(epgNow).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span></div>
             <section className="epg-scroll" aria-label="TV programme guide"><div className="epg-grid" style={{ '--epg-width': `${epgWidth}px` } as React.CSSProperties}><div className="epg-head"><div className="epg-channel-head">CHANNEL</div><div className="epg-time-head">{epgTicks.map((tick) => <span key={tick} style={{ left: `${((tick - epgStart) / (epgEnd - epgStart)) * 100}%` }}>{new Date(tick).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>)}</div></div>{filteredChannels.map((channel) => <div className="epg-row" key={channel.uuid}><button className="epg-channel" onClick={() => void startLive(channel)} title={`Watch ${channel.name}`}>{channel.logo ? <img src={channel.logo} alt="" loading="lazy" /> : <span className="epg-logo-placeholder">{channel.name.slice(0, 2).toUpperCase()}</span>}<span><strong>{channel.number ? `${channel.number}. ` : ''}{channel.name}</strong><small>{channel.current?.title || 'No current programme'}</small></span><span className="epg-tune">▶</span></button><div className="epg-programs">{channel.programmes?.map((program) => { const left = Math.max(0, (program.start * 1000 - epgStart) / (epgEnd - epgStart) * 100); const right = Math.min(100, (program.stop * 1000 - epgStart) / (epgEnd - epgStart) * 100); if (right <= left) return null; return <button className={`epg-program ${program.start * 1000 <= epgNow && program.stop * 1000 > epgNow ? 'epg-current' : ''}`} key={`${channel.uuid}-${program.eventId || program.start}`} style={{ left: `${left}%`, width: `${right - left}%` }} title={`${program.title}${program.subtitle ? ` — ${program.subtitle}` : ''}`} onClick={() => void startLive(channel)}><strong>{program.title}</strong><small>{new Date(program.start * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} – {new Date(program.stop * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</small></button>; })}</div></div>)}{channels.length === 0 && !loading && <p className="seerr-hint">{channelSearch.trim() ? 'No matching channels.' : 'No channels found in TVHeadend.'}</p>}</div></section>
             {channelStart < channelTotal && <div className="load-more"><button onClick={() => void loadMoreChannels()} disabled={channelLoadingMore}>{channelLoadingMore ? 'Loading…' : `Load more channels (${channelStart} of ${channelTotal})`}</button></div>}
           </>
