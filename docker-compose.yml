@@ -1,0 +1,26 @@
+services:
+  home-cinema:
+    build: .
+    image: ghcr.io/imrasalghul/home-cinema:latest
+    container_name: home-cinema
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 3000
+      MEDIA_ROOT: /media/library
+      NODE_ENV: production
+    ports:
+      - "${APP_PORT:-3210}:3000"
+    volumes:
+      - /media/library/movies:/media/library/movies:ro
+      - /media/library/tv:/media/library/tv:ro
+      - home-cinema-data:/data
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+
+volumes:
+  home-cinema-data:
